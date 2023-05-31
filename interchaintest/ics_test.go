@@ -65,6 +65,14 @@ func setupNeutronGenesis(
 	}
 }
 
+type IcaExampleContractQuery struct {
+	InterchainAccountAddressFromContract InterchainAccountAddressFromContractQuery `json:"interchain_account_address_from_contract,omitempty"`
+}
+
+type InterchainAccountAddressFromContractQuery struct {
+	InterchainAccountId string `json:"interchain_account_id,omitempty"`
+}
+
 // This tests Cosmos Interchain Security, spinning up a provider and a single consumer chain.
 func TestICS(t *testing.T) {
 	if testing.Short() {
@@ -94,7 +102,7 @@ func TestICS(t *testing.T) {
 				Bech32Prefix:   "neutron",
 				Denom:          "untrn",
 				GasPrices:      "0.0untrn",
-				GasAdjustment:  1.3,
+				GasAdjustment:  10.3,
 				TrustingPeriod: "1197504s",
 				NoHostMount:    false,
 				ModifyGenesis:  setupNeutronGenesis("0.05", []string{"untrn"}, []string{"uatom"}),
@@ -191,6 +199,7 @@ func TestICS(t *testing.T) {
 		"--home", atom.HomeDir(),
 		"--chain-id", atom.Config().ChainID,
 		"--from", "faucet",
+		"--fees", "20000uatom",
 		"--keyring-backend", keyring.BackendTest,
 		"-y",
 	}
@@ -204,11 +213,48 @@ func TestICS(t *testing.T) {
 	users := ibctest.GetAndFundTestUsers(t, ctx, "default", int64(100_000_000), atom, neutron)
 	_, neutronUser := users[0], users[1]
 
-	err = testutil.WaitForBlocks(ctx, 5, atom, neutron)
-	require.NoError(t, err, "failed to wait for blocks")
+	// err = testutil.WaitForBlocks(ctx, 5, atom, neutron)
+	// require.NoError(t, err, "failed to wait for blocks")
 
 	// 1. Store neutron example contract
 	// 2. Run create account / query account test from here: https://github.com/neutron-org/neutron-sdk/blob/main/scripts/test_interchain_txs.sh
-	_, err = cosmosNeutron.StoreContract(ctx, neutronUser.KeyName, "wasms/neutron_interchain_txs.wasm")
+	codeId, err := cosmosNeutron.StoreContract(ctx, neutronUser.KeyName, "wasms/neutron_interchain_txs.wasm")
 	require.NoError(t, err, "failed to store neutron ICA contract")
+
+	contract, err := cosmosNeutron.InstantiateContract(ctx, neutronUser.KeyName, codeId, `{}`, true)
+	require.NoError(t, err, "failed to instantiate ICA contract")
+
+	connections, err := r.GetConnections(ctx, eRep, "neutron-2")
+	require.NoError(t, err, "failed to get neturon-2 IBC connections from relayer")
+	var connectionId string
+	for _, connection := range connections {
+		for _, version := range connection.Versions {
+			if version.String() != "transfer" {
+				connectionId = connection.ID
+				break
+			}
+		}
+	}
+
+	// neutrond tx wasm execute neutron14hj2tavq8fpesdwxxcu44rty3hh90vhujrvcmstl4zr3txmfvw9s5c2epq {\"register\":{\"connection_id\": \"connection-1\",\"interchain_account_id\": \"test\"}} --from default-neutron-2-zuq --gas-prices 0.0untrn --gas-adjustment 1.3 --keyring-backend test --output json -y --home /var/cosmos-chain/neutron-2 --node tcp://neutron-2-fn-0-TestICS:26657 --chain-id neutron-2
+	tx, err := cosmosNeutron.ExecuteContract(
+		ctx,
+		neutronUser.KeyName,
+		contract,
+		`{"register":{"connection_id": "`+connectionId+`","interchain_account_id": "test"}}`,
+	)
+	require.NoError(t, err, "failed to execute message to create ICA account")
+	print(tx)
+
+	// Wait a bit for the ICA packet to get relayed.
+	err = testutil.WaitForBlocks(ctx, 2, atom, neutron)
+	require.NoError(t, err, "failed to wait for blocks")
+
+	var response string
+	err = cosmosNeutron.QueryContract(ctx, contract, IcaExampleContractQuery{
+		InterchainAccountAddressFromContract: InterchainAccountAddressFromContractQuery{
+			InterchainAccountId: "test",
+		},
+	}, &response)
+	require.NoError(t, err, "failed to query ICA account address")
 }
