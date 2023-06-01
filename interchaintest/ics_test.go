@@ -111,7 +111,7 @@ func TestICS(t *testing.T) {
 				Images: []ibc.DockerImage{
 					{
 						Repository: "ghcr.io/strangelove-ventures/heighliner/neutron",
-						Version:    "v1.0.1",
+						Version:    "v1.0.2",
 						UidGid:     "1025:1025",
 					},
 				},
